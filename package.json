@@ -1,0 +1,73 @@
+{
+  "name": "vscode-visio",
+  "displayName": "VS Code Visio Flowchart",
+  "description": "Generate Visio basic flowchart VSDX files from selected C code.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:c",
+    "onCommand:vscodeVisio.generateFlowchartFromSelection"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vscodeVisio.generateFlowchartFromSelection",
+        "title": "Visio: Generate Flowchart from Selection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "vscodeVisio.generateFlowchartFromSelection",
+          "when": "editorLangId == c",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "VS Code Visio Flowchart",
+      "properties": {
+        "vscodeVisio.outputDirectory": {
+          "type": "string",
+          "default": "visio-output",
+          "description": "Directory for generated VSDX files. Relative paths are resolved from the workspace folder."
+        },
+        "vscodeVisio.visioStencilPath": {
+          "type": "string",
+          "default": "C:\\\\Program Files\\\\Microsoft Office\\\\Root\\\\Office16\\\\Visio Content\\\\1041\\\\BASFLO_M.VSSX",
+          "description": "Path to the Visio basic flowchart stencil."
+        },
+        "vscodeVisio.openAfterGenerate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open the generated VSDX file after generation."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
+    "verify:visio": "npm run compile && powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/Verify-VisioFlowchart.ps1"
+  },
+  "dependencies": {
+    "tree-sitter-c": "0.24.1",
+    "web-tree-sitter": "0.26.9"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.29",
+    "@types/vscode": "1.120.0",
+    "typescript": "5.8.3"
+  }
+}

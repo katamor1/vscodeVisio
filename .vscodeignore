@@ -1,0 +1,6 @@
+out/test/**
+test/**
+src/**
+tsconfig.json
+*.map
+visio-output/**
