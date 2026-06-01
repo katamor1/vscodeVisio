@@ -1,10 +1,11 @@
 int build_report(int a, int b, int c, int d) {
+    // 集計値を初期化
     int total = 0;
     int status = 0;
     int retry = 0;
     int bucket = 0;
     for (int i = 0; i < 4; i++) {
-        total += i;
+        total += i; // add loop index
         if (a > i) {
             total += a;
             if (b > total) {

@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
 import { parseCSelection } from "../parser/cSelectionParser";
 import { buildFlowModel } from "../flow/flowModel";
 import { layoutFlow } from "../layout/layoutGraph";
+import { readCSourceFile, writeJsonUtf8Bom } from "../encoding/textFiles";
 
 async function main(): Promise<void> {
   const [inputPath, outputPath] = process.argv.slice(2);
@@ -9,10 +9,10 @@ async function main(): Promise<void> {
     throw new Error("Usage: node out/src/cli/generateFlowJson.js <input.c> <output.json>");
   }
 
-  const source = await fs.readFile(inputPath, "utf8");
+  const { text: source } = await readCSourceFile(inputPath);
   const parsed = await parseCSelection(source, { mode: "selection" });
   const flow = layoutFlow(buildFlowModel(parsed));
-  await fs.writeFile(outputPath, `${JSON.stringify(flow, null, 2)}\n`, "utf8");
+  await writeJsonUtf8Bom(outputPath, flow);
 }
 
 main().catch((error: unknown) => {
