@@ -55,7 +55,7 @@ if ($pngs.Count -eq 0) {
 }
 
 $flow = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json
-$stepCount = @($flow.nodes | Where-Object { $_.kind -ne "start" -and $_.label -ne "End" }).Count
+$stepCount = @($flow.nodes | Where-Object { $_.kind -ne "start" -and !($_.kind -eq "terminator" -and -not $_.source) }).Count
 if ($stepCount -lt 80) {
     throw "Expected at least 80 flow steps but found $stepCount"
 }

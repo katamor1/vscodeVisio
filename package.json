@@ -1,9 +1,15 @@
 {
   "name": "vscode-visio",
-  "displayName": "VS Code Visio Flowchart",
-  "description": "Generate Visio basic flowchart VSDX files from selected C code.",
+  "displayName": "VS Code Visio フローチャート",
+  "description": "選択した C コードまたは現在の C ファイルから Visio 基本フローチャートの VSDX ファイルを生成します。",
   "version": "0.0.1",
   "publisher": "local",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/katamor1/vscodeVisio.git"
+  },
   "os": [
     "win32"
   ],
@@ -17,12 +23,12 @@
     "onLanguage:c",
     "onCommand:vscodeVisio.generateFlowchartFromSelection"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/src/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "vscodeVisio.generateFlowchartFromSelection",
-        "title": "Visio: Generate Flowchart from Selection"
+        "title": "Visio: 選択範囲からフローチャートを生成"
       }
     ],
     "menus": {
@@ -35,27 +41,28 @@
       ]
     },
     "configuration": {
-      "title": "VS Code Visio Flowchart",
+      "title": "VS Code Visio フローチャート",
       "properties": {
         "vscodeVisio.outputDirectory": {
           "type": "string",
           "default": "visio-output",
-          "description": "Directory for generated VSDX files. Relative paths are resolved from the workspace folder."
+          "description": "生成した VSDX ファイルの出力先ディレクトリ。相対パスはワークスペースフォルダーから解決されます。"
         },
         "vscodeVisio.visioStencilPath": {
           "type": "string",
           "default": "C:\\\\Program Files\\\\Microsoft Office\\\\Root\\\\Office16\\\\Visio Content\\\\1041\\\\BASFLO_M.VSSX",
-          "description": "Path to the Visio basic flowchart stencil."
+          "description": "Visio 基本フローチャートステンシルのパス。"
         },
         "vscodeVisio.openAfterGenerate": {
           "type": "boolean",
           "default": false,
-          "description": "Open the generated VSDX file after generation."
+          "description": "生成後に VSDX ファイルを開きます。"
         }
       }
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node --test \"out/test/**/*.test.js\"",

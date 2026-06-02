@@ -24,7 +24,7 @@ export interface FlowEdge {
   readonly label?: string;
 }
 
-export type FlowFromPort = "bottom" | "right";
+export type FlowFromPort = "bottom" | "right" | "left";
 export type FlowToPort = "top";
 
 export interface FlowGroup {
@@ -63,6 +63,15 @@ interface BuildContext {
   nextGroupId: number;
 }
 
+interface AddNodeOptions {
+  readonly commentSource?: SyntaxNode;
+  readonly suppressComment?: boolean;
+}
+
+interface AppendStatementsOptions {
+  readonly allowDisconnectedFirstStatement?: boolean;
+}
+
 interface SourceComment {
   readonly text: string;
   readonly startIndex: number;
@@ -84,10 +93,14 @@ export function buildFlowModel(parsed: ParsedCSelection): FlowModel {
     nextGroupId: 1
   };
 
-  const start = addNode(context, "start", `Start: ${parsed.functionName}`);
+  const startLabel = parsed.syntheticWrapper ? `Start: ${parsed.functionName}` : parsed.functionSignature;
+  const start = addNode(context, "start", startLabel);
   const exits = appendStatements(context, compoundStatements(parsed.bodyNode), [{ from: start.id, kind: "normal" }]);
-  const end = addNode(context, "terminator", "End");
+  const end = addNode(context, "terminator", parsed.syntheticWrapper ? "End" : "return");
   for (const exit of exits) {
+    if (exit.kind === "return") {
+      continue;
+    }
     connect(context, exit.from, end.id, terminalEdgeLabel(exit.kind) ?? exit.label, exit.fromPort, exit.toPort);
   }
 
@@ -100,29 +113,45 @@ export function buildFlowModel(parsed: ParsedCSelection): FlowModel {
 }
 
 export function countFlowSteps(flow: FlowModel): number {
-  return flow.nodes.filter((node) => node.kind !== "start" && node.label !== "End").length;
+  return flow.nodes.filter((node) => node.kind !== "start" && !(node.kind === "terminator" && !node.source)).length;
 }
 
-function appendStatements(context: BuildContext, statements: SyntaxNode[], incoming: FlowExit[]): FlowExit[] {
+function appendStatements(
+  context: BuildContext,
+  statements: SyntaxNode[],
+  incoming: FlowExit[],
+  options: AppendStatementsOptions = {}
+): FlowExit[] {
   let pending = incoming;
   const carried: FlowExit[] = [];
+  let disconnectedStartUsed = false;
 
   for (const statement of statements) {
     const normal = pending.filter((exit) => exit.kind === "normal");
     carried.push(...pending.filter((exit) => exit.kind !== "normal"));
 
     if (normal.length === 0) {
-      const unreachable = appendStatement(context, statement, []);
-      pending = unreachable;
+      if (!disconnectedStartUsed && options.allowDisconnectedFirstStatement) {
+        pending = appendStatement(context, statement, [], { allowDisconnectedFirstStatement: true });
+        disconnectedStartUsed = true;
+      } else {
+        pending = [];
+      }
     } else {
       pending = appendStatement(context, statement, normal);
+      disconnectedStartUsed = true;
     }
   }
 
   return [...pending, ...carried];
 }
 
-function appendStatement(context: BuildContext, statement: SyntaxNode, incoming: FlowExit[]): FlowExit[] {
+function appendStatement(
+  context: BuildContext,
+  statement: SyntaxNode,
+  incoming: FlowExit[],
+  options: AppendStatementsOptions = {}
+): FlowExit[] {
   switch (statement.type) {
     case "if_statement":
       return appendIf(context, statement, incoming);
@@ -141,7 +170,7 @@ function appendStatement(context: BuildContext, statement: SyntaxNode, incoming:
     case "continue_statement":
       return appendSimple(context, statement, incoming, "decision", "continue", "continue");
     case "compound_statement":
-      return appendStatements(context, compoundStatements(statement), incoming);
+      return appendStatements(context, compoundStatements(statement), incoming, options);
     case "case_statement":
       return appendCaseBody(context, statement, incoming);
     default:
@@ -203,7 +232,7 @@ function appendLoop(context: BuildContext, statement: SyntaxNode, incoming: Flow
     if (exit.kind === "normal" || exit.kind === "continue") {
       connect(context, exit.from, decision.id, exit.kind === "continue" ? "Continue" : "Next", "right");
     } else if (exit.kind === "break") {
-      loopExits.push({ from: exit.from, kind: "normal", fromPort: "right", toPort: "top" });
+      loopExits.push({ from: exit.from, kind: "normal", label: "Break", fromPort: "right", toPort: "top" });
     } else {
       loopExits.push(exit);
     }
@@ -217,17 +246,19 @@ function appendForLoop(context: BuildContext, statement: SyntaxNode, incoming: F
   const condition = statement.childForFieldName("condition");
   const update = statement.childForFieldName("update");
   const body = statement.childForFieldName("body");
-  const initNode = addNode(context, "process", `for init: ${forPartText(initializer, "(none)")}`, initializer ?? statement);
+  const initNode = addNode(context, "process", forPartText(initializer, "(none)"), initializer ?? statement, { suppressComment: true });
   connectIncoming(context, incoming, initNode.id);
 
-  const conditionNode = addNode(context, "decision", `for condition: ${forPartText(condition, "true")}`, condition ?? statement);
+  const conditionNode = addNode(context, "decision", `for\n${forPartText(condition, "true")}`, condition ?? statement, {
+    commentSource: statement
+  });
   connect(context, initNode.id, conditionNode.id);
 
   const bodyStartIndex = context.nodes.length;
   const bodyExits = body ? appendStatement(context, body, [{ from: conditionNode.id, kind: "normal", label: "Yes" }]) : [];
   addLoopBodyGroup(context, conditionNode.id, bodyStartIndex);
 
-  const updateNode = addNode(context, "process", `for update: ${forPartText(update, "(none)")}`, update ?? statement);
+  const updateNode = addNode(context, "process", forPartText(update, "(none)"), update ?? statement, { suppressComment: true });
   const loopExits: FlowExit[] = [{ from: conditionNode.id, kind: "normal", label: "No", fromPort: "right", toPort: "top" }];
 
   if (!body || bodyExits.length === 0) {
@@ -236,9 +267,16 @@ function appendForLoop(context: BuildContext, statement: SyntaxNode, incoming: F
 
   for (const exit of bodyExits) {
     if (exit.kind === "normal" || exit.kind === "continue") {
-      connect(context, exit.from, updateNode.id, exit.kind === "continue" ? "Continue" : undefined, exit.kind === "continue" ? "right" : "bottom");
+      connect(
+        context,
+        exit.from,
+        updateNode.id,
+        exit.kind === "continue" ? "Continue" : exit.label,
+        exit.kind === "continue" ? "right" : exit.fromPort ?? "bottom",
+        exit.toPort
+      );
     } else if (exit.kind === "break") {
-      loopExits.push({ from: exit.from, kind: "normal", fromPort: "right", toPort: "top" });
+      loopExits.push({ from: exit.from, kind: "normal", label: "Break", fromPort: "right", toPort: "top" });
     } else {
       loopExits.push(exit);
     }
@@ -268,7 +306,7 @@ function appendDoWhile(context: BuildContext, statement: SyntaxNode, incoming: F
     if (exit.kind === "normal" || exit.kind === "continue") {
       connect(context, exit.from, decision.id, exit.kind === "continue" ? "Continue" : "Next", "right");
     } else if (exit.kind === "break") {
-      loopExits.push({ from: exit.from, kind: "normal", fromPort: "right", toPort: "top" });
+      loopExits.push({ from: exit.from, kind: "normal", label: "Break", fromPort: "right", toPort: "top" });
     } else {
       loopExits.push(exit);
     }
@@ -302,7 +340,7 @@ function appendSwitch(context: BuildContext, statement: SyntaxNode, incoming: Fl
     }
 
     const firstCaseNodeIndex = context.nodes.length;
-    const caseExits = appendStatements(context, bodyStatements, []);
+    const caseExits = appendStatements(context, bodyStatements, [], { allowDisconnectedFirstStatement: true });
     const firstCaseNode = context.nodes[firstCaseNodeIndex];
     if (!firstCaseNode) {
       continue;
@@ -316,7 +354,7 @@ function appendSwitch(context: BuildContext, statement: SyntaxNode, incoming: Fl
 
     for (const exit of caseExits) {
       if (exit.kind === "break") {
-        exits.push({ from: exit.from, kind: "normal", fromPort: "right", toPort: "top" });
+        exits.push({ from: exit.from, kind: "normal", label: "Break", fromPort: "right", toPort: "top" });
       } else if (exit.kind === "normal" && index < cases.length - 1) {
         fallthrough.push({ from: exit.from, kind: "normal", label: "Fallthrough", fromPort: "right", toPort: "top" });
       } else {
@@ -331,8 +369,15 @@ function appendCaseBody(context: BuildContext, caseNode: SyntaxNode, incoming: F
   return appendStatements(context, caseBodyStatements(caseNode), incoming);
 }
 
-function addNode(context: BuildContext, kind: FlowNodeKind, label: string, source?: SyntaxNode): FlowNode {
-  const comment = kind === "process" && source ? commentForSource(context, source) : undefined;
+function addNode(
+  context: BuildContext,
+  kind: FlowNodeKind,
+  label: string,
+  source?: SyntaxNode,
+  options: AddNodeOptions = {}
+): FlowNode {
+  const commentSource = options.suppressComment ? undefined : options.commentSource ?? source;
+  const comment = commentSource ? commentForSource(context, commentSource) : undefined;
   const node: FlowNode = {
     id: `n${context.nextId++}`,
     kind,
@@ -396,7 +441,7 @@ function connect(
 }
 
 function compoundStatements(node: SyntaxNode): SyntaxNode[] {
-  return node.namedChildren.filter((child) => child.isNamed);
+  return node.namedChildren.filter((child) => isStatementLike(child));
 }
 
 function caseBodyStatements(caseNode: SyntaxNode): SyntaxNode[] {
@@ -435,7 +480,13 @@ function commentForSource(context: BuildContext, source: SyntaxNode): string | u
   const inline = context.comments.filter(
     (comment) => comment.startLine === source.endPosition.row + 1 && comment.startIndex >= source.endIndex
   );
-  const comments = [...leading, ...inline].map((comment) => comment.text).filter((text) => text.length > 0);
+  const headerInline = context.comments.filter(
+    (comment) =>
+      comment.startLine === source.startPosition.row + 1 &&
+      comment.startIndex > source.startIndex &&
+      comment.startIndex < source.endIndex
+  );
+  const comments = [...leading, ...inline, ...headerInline].map((comment) => comment.text).filter((text) => text.length > 0);
   return comments.length > 0 ? comments.join("\n") : undefined;
 }
 

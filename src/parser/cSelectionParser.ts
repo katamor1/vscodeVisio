@@ -14,6 +14,7 @@ export interface ParsedCSelection {
   readonly bodyNode: SyntaxNode;
   readonly syntheticWrapper: boolean;
   readonly functionName: string;
+  readonly functionSignature: string;
 }
 
 let parserPromise: Promise<Parser> | undefined;
@@ -35,7 +36,8 @@ export async function parseCSelection(source: string, options: ParseMode): Promi
       functionNode,
       bodyNode,
       syntheticWrapper: false,
-      functionName: getFunctionName(functionNode) ?? "selected_function"
+      functionName: getFunctionName(functionNode) ?? "selected_function",
+      functionSignature: getFunctionSignature(functionNode) ?? "selected_function"
     };
   }
 
@@ -51,7 +53,8 @@ export async function parseCSelection(source: string, options: ParseMode): Promi
         functionNode: directFunction,
         bodyNode: requireBody(directFunction),
         syntheticWrapper: false,
-        functionName: getFunctionName(directFunction) ?? "selected_function"
+        functionName: getFunctionName(directFunction) ?? "selected_function",
+        functionSignature: getFunctionSignature(directFunction) ?? "selected_function"
       };
     }
   }
@@ -71,7 +74,8 @@ export async function parseCSelection(source: string, options: ParseMode): Promi
     functionNode: wrappedFunction,
     bodyNode: requireBody(wrappedFunction),
     syntheticWrapper: true,
-    functionName: "__selected_fragment"
+    functionName: "__selected_fragment",
+    functionSignature: getFunctionSignature(wrappedFunction) ?? "void __selected_fragment(void)"
   };
 }
 
@@ -152,4 +156,20 @@ function getFunctionName(functionNode: SyntaxNode): string | undefined {
     stack.push(...node.namedChildren);
   }
   return undefined;
+}
+
+function getFunctionSignature(functionNode: SyntaxNode): string | undefined {
+  const body = functionNode.childForFieldName("body");
+  if (!body) {
+    return undefined;
+  }
+  const signatureLength = body.startIndex - functionNode.startIndex;
+  if (signatureLength <= 0) {
+    return undefined;
+  }
+  return normalizeWhitespace(functionNode.text.slice(0, signatureLength));
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }

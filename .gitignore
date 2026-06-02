@@ -3,3 +3,4 @@ out/
 visio-output/
 *.vsix
 *.log
+/samples

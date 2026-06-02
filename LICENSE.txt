@@ -1,0 +1,7 @@
+Copyright (c) 2026.
+
+All rights reserved.
+
+This package is provided for local/internal use only. No license is granted for
+copying, modification, distribution, or sublicensing unless separately agreed in
+writing by the copyright holder.

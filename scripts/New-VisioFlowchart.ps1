@@ -73,6 +73,7 @@ function Ensure-FlowConnectionPoints {
     Ensure-ConnectionPoint -Shape $Shape -Name "FlowTop" -XFormula "Width*0.5" -YFormula "Height"
     Ensure-ConnectionPoint -Shape $Shape -Name "FlowBottom" -XFormula "Width*0.5" -YFormula "0"
     Ensure-ConnectionPoint -Shape $Shape -Name "FlowRight" -XFormula "Width" -YFormula "Height*0.5"
+    Ensure-ConnectionPoint -Shape $Shape -Name "FlowLeft" -XFormula "0" -YFormula "Height*0.5"
 }
 
 function Get-FlowBeginPortCell {
@@ -84,6 +85,7 @@ function Get-FlowBeginPortCell {
     switch ($Port.ToLowerInvariant()) {
         "bottom" { return $Shape.CellsU("Connections.FlowBottom.X") }
         "right" { return $Shape.CellsU("Connections.FlowRight.X") }
+        "left" { return $Shape.CellsU("Connections.FlowLeft.X") }
         default { throw "Unknown flow connector begin port: $Port" }
     }
 }
@@ -191,12 +193,12 @@ try {
         if (-not $shapeById.ContainsKey($edge.from) -or -not $shapeById.ContainsKey($edge.to)) {
             throw "Edge references missing shape: $($edge.from) -> $($edge.to)"
         }
-        $connector = $page.Drop($masters.connector, 0, 0)
         $fromPort = if ($edge.fromPort) { [string]$edge.fromPort } else { "bottom" }
-        Set-CellFormula -Shape $connector -Cell "ObjType" -Formula "2"
-        Set-CellFormula -Shape $connector -Cell "ShapeRouteStyle" -Formula "5"
+        $connector = $page.Drop($masters.connector, 0, 0)
         $connector.CellsU("BeginX").GlueTo((Get-FlowBeginPortCell -Shape $shapeById[$edge.from] -Port $fromPort))
         $connector.CellsU("EndX").GlueTo((Get-FlowEndPortCell -Shape $shapeById[$edge.to]))
+        Set-CellFormula -Shape $connector -Cell "ObjType" -Formula "2"
+        Set-CellFormula -Shape $connector -Cell "ShapeRouteStyle" -Formula "5"
         Set-CellFormula -Shape $connector -Cell "BeginArrow" -Formula "0"
         Set-CellFormula -Shape $connector -Cell "EndArrow" -Formula "4"
         Set-CellFormula -Shape $connector -Cell "EndArrowSize" -Formula "2"

@@ -100,5 +100,6 @@ int build_report(int a, int b, int c, int d) {
         status = -total;
     }
     total += bucket;
+    retry += total;
     return status + total;
 }
