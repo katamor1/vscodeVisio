@@ -75,7 +75,7 @@ test("lays out a four-level fixture with enough process fidelity for Visio verif
   assert.equal(parsed.syntheticWrapper, false);
   assert.ok(countFlowSteps(flow) >= 80, `expected at least 80 flow steps, got ${countFlowSteps(flow)}`);
   assert.ok(flow.nodes.filter((node) => node.kind === "decision").length >= 12);
-  assert.ok(flow.nodes.some((node) => node.label.includes("switch (d)")));
+  assert.ok(flow.nodes.some((node) => node.label === "switch\nd"));
   assert.ok(flow.edges.some((edge) => edge.label === "case 0"));
   assert.ok(flow.nodes.every((node) => Number.isFinite(laidOut.positions[node.id]?.x)));
   assert.ok(flow.nodes.every((node) => Number.isFinite(laidOut.positions[node.id]?.y)));

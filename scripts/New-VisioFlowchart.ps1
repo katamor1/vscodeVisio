@@ -83,6 +83,7 @@ function Get-FlowBeginPortCell {
     )
 
     switch ($Port.ToLowerInvariant()) {
+        "top" { return $Shape.CellsU("Connections.FlowTop.X") }
         "bottom" { return $Shape.CellsU("Connections.FlowBottom.X") }
         "right" { return $Shape.CellsU("Connections.FlowRight.X") }
         "left" { return $Shape.CellsU("Connections.FlowLeft.X") }
@@ -92,10 +93,126 @@ function Get-FlowBeginPortCell {
 
 function Get-FlowEndPortCell {
     param(
-        [Parameter(Mandatory = $true)]$Shape
+        [Parameter(Mandatory = $true)]$Shape,
+        [string]$Port = "top"
     )
 
-    return $Shape.CellsU("Connections.FlowTop.X")
+    return Get-FlowBeginPortCell -Shape $Shape -Port $Port
+}
+
+function New-RouteDummyNode {
+    param(
+        [Parameter(Mandatory = $true)]$Page,
+        [Parameter(Mandatory = $true)]$RouteNode
+    )
+
+    $x = [double]$RouteNode.x
+    $y = [double]$RouteNode.y
+    $orientation = if ($RouteNode.orientation) { [string]$RouteNode.orientation } else { "horizontal" }
+    switch ($orientation.ToLowerInvariant()) {
+        "vertical" {
+            $widthFormula = "0.005 in"
+            $heightFormula = "0.24 in"
+        }
+        default {
+            $widthFormula = "0.24 in"
+            $heightFormula = "0.005 in"
+        }
+    }
+
+    $width = [double]($widthFormula -replace " in", "")
+    $height = [double]($heightFormula -replace " in", "")
+    $shape = $Page.DrawRectangle($x - $width / 2, $y - $height / 2, $x + $width / 2, $y + $height / 2)
+    $shape.Text = ""
+    Set-CellFormula -Shape $shape -Cell "Width" -Formula $widthFormula
+    Set-CellFormula -Shape $shape -Cell "Height" -Formula $heightFormula
+    Set-CellFormula -Shape $shape -Cell "FillPattern" -Formula "0"
+    Set-CellFormula -Shape $shape -Cell "LinePattern" -Formula "1"
+    Set-CellFormula -Shape $shape -Cell "LineColor" -Formula "RGB(0,0,0)"
+    Set-CellFormula -Shape $shape -Cell "LineWeight" -Formula "0.75 pt"
+    Set-CellFormula -Shape $shape -Cell "ObjType" -Formula "1"
+    Ensure-FlowConnectionPoints -Shape $shape
+    return $shape
+}
+
+function Get-RouteDummyPorts {
+    param(
+        [Parameter(Mandatory = $true)]$RouteNode
+    )
+
+    if ($RouteNode.inPort -and $RouteNode.outPort) {
+        return @{ In = [string]$RouteNode.inPort; Out = [string]$RouteNode.outPort }
+    }
+
+    $orientation = if ($RouteNode.orientation) { [string]$RouteNode.orientation } else { "horizontal" }
+    switch ($orientation.ToLowerInvariant()) {
+        "vertical" { return @{ In = "bottom"; Out = "top" } }
+        default { return @{ In = "left"; Out = "right" } }
+    }
+}
+
+function Test-ConnectorLabelVisible {
+    param(
+        [string]$Label = ""
+    )
+
+    if (-not $Label) {
+        return $false
+    }
+    return @("Break", "Continue") -notcontains $Label
+}
+
+function New-FlowConnector {
+    param(
+        [Parameter(Mandatory = $true)]$Page,
+        [Parameter(Mandatory = $true)]$ConnectorMaster,
+        [Parameter(Mandatory = $true)]$FromShape,
+        [Parameter(Mandatory = $true)][string]$FromPort,
+        [Parameter(Mandatory = $true)]$ToShape,
+        [string]$ToPort = "top",
+        [string]$EndArrow = "4",
+        [string]$Label = ""
+    )
+
+    $connector = $Page.Drop($ConnectorMaster, 0, 0)
+    $connector.CellsU("BeginX").GlueTo((Get-FlowBeginPortCell -Shape $FromShape -Port $FromPort))
+    $connector.CellsU("EndX").GlueTo((Get-FlowEndPortCell -Shape $ToShape -Port $ToPort))
+    Set-CellFormula -Shape $connector -Cell "ObjType" -Formula "2"
+    Set-CellFormula -Shape $connector -Cell "ShapeRouteStyle" -Formula "5"
+    Set-CellFormula -Shape $connector -Cell "BeginArrow" -Formula "0"
+    Set-CellFormula -Shape $connector -Cell "EndArrow" -Formula $EndArrow
+    Set-CellFormula -Shape $connector -Cell "EndArrowSize" -Formula "2"
+    Set-CellFormula -Shape $connector -Cell "LineColor" -Formula "RGB(0,0,0)"
+    if ($Label) {
+        $connector.Text = $Label
+        Set-CellFormula -Shape $connector -Cell "Char.Size" -Formula "7 pt"
+    }
+    return $connector
+}
+
+function New-EdgeLabelText {
+    param(
+        [Parameter(Mandatory = $true)]$Page,
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)]$LabelPosition
+    )
+
+    $labelWidth = if ($LabelPosition.width) { [double]$LabelPosition.width } else { 0.45 }
+    $labelHeight = if ($LabelPosition.height) { [double]$LabelPosition.height } else { 0.22 }
+    $labelText = $Page.DrawRectangle(
+        [double]$LabelPosition.x - $labelWidth / 2,
+        [double]$LabelPosition.y - $labelHeight / 2,
+        [double]$LabelPosition.x + $labelWidth / 2,
+        [double]$LabelPosition.y + $labelHeight / 2
+    )
+    $labelText.Text = $Text
+    Set-CellFormula -Shape $labelText -Cell "Width" -Formula ("{0} in" -f $labelWidth)
+    Set-CellFormula -Shape $labelText -Cell "Height" -Formula ("{0} in" -f $labelHeight)
+    Set-CellFormula -Shape $labelText -Cell "FillPattern" -Formula "0"
+    Set-CellFormula -Shape $labelText -Cell "LinePattern" -Formula "0"
+    Set-CellFormula -Shape $labelText -Cell "Char.Size" -Formula "7 pt"
+    Set-CellFormula -Shape $labelText -Cell "Para.HorzAlign" -Formula "0"
+    return $labelText
 }
 
 if (-not (Test-Path -LiteralPath $InputJson)) {
@@ -173,13 +290,17 @@ try {
         if ($node.comment) {
             $commentPosition = $flow.commentPositions.PSObject.Properties[$node.id].Value
             if ($commentPosition) {
+                $commentWidth = if ($commentPosition.width) { [double]$commentPosition.width } else { 2.9 }
+                $commentHeight = if ($commentPosition.height) { [double]$commentPosition.height } else { 0.64 }
                 $commentText = $page.DrawRectangle(
-                    [double]$commentPosition.x - 1.45,
-                    [double]$commentPosition.y - 0.32,
-                    [double]$commentPosition.x + 1.45,
-                    [double]$commentPosition.y + 0.32
+                    [double]$commentPosition.x - $commentWidth / 2,
+                    [double]$commentPosition.y - $commentHeight / 2,
+                    [double]$commentPosition.x + $commentWidth / 2,
+                    [double]$commentPosition.y + $commentHeight / 2
                 )
                 $commentText.Text = [string]$node.comment
+                Set-CellFormula -Shape $commentText -Cell "Width" -Formula ("{0} in" -f $commentWidth)
+                Set-CellFormula -Shape $commentText -Cell "Height" -Formula ("{0} in" -f $commentHeight)
                 Set-CellFormula -Shape $commentText -Cell "FillPattern" -Formula "0"
                 Set-CellFormula -Shape $commentText -Cell "LinePattern" -Formula "0"
                 Set-CellFormula -Shape $commentText -Cell "Char.Size" -Formula "7 pt"
@@ -194,17 +315,42 @@ try {
             throw "Edge references missing shape: $($edge.from) -> $($edge.to)"
         }
         $fromPort = if ($edge.fromPort) { [string]$edge.fromPort } else { "bottom" }
-        $connector = $page.Drop($masters.connector, 0, 0)
-        $connector.CellsU("BeginX").GlueTo((Get-FlowBeginPortCell -Shape $shapeById[$edge.from] -Port $fromPort))
-        $connector.CellsU("EndX").GlueTo((Get-FlowEndPortCell -Shape $shapeById[$edge.to]))
-        Set-CellFormula -Shape $connector -Cell "ObjType" -Formula "2"
-        Set-CellFormula -Shape $connector -Cell "ShapeRouteStyle" -Formula "5"
-        Set-CellFormula -Shape $connector -Cell "BeginArrow" -Formula "0"
-        Set-CellFormula -Shape $connector -Cell "EndArrow" -Formula "4"
-        Set-CellFormula -Shape $connector -Cell "EndArrowSize" -Formula "2"
-        if ($edge.label) {
-            $connector.Text = [string]$edge.label
-            Set-CellFormula -Shape $connector -Cell "Char.Size" -Formula "7 pt"
+        $connectorLabel = if ((Test-ConnectorLabelVisible -Label $edge.label) -and -not $edge.labelPosition) { [string]$edge.label } else { "" }
+        if ($edge.routeNode) {
+            $dummyNode = New-RouteDummyNode -Page $page -RouteNode $edge.routeNode
+            $routePorts = Get-RouteDummyPorts -RouteNode $edge.routeNode
+            $firstConnector = New-FlowConnector `
+                -Page $page `
+                -ConnectorMaster $masters.connector `
+                -FromShape $shapeById[$edge.from] `
+                -FromPort $fromPort `
+                -ToShape $dummyNode `
+                -ToPort $routePorts.In `
+                -EndArrow "0"
+            $secondConnector = New-FlowConnector `
+                -Page $page `
+                -ConnectorMaster $masters.connector `
+                -FromShape $dummyNode `
+                -FromPort $routePorts.Out `
+                -ToShape $shapeById[$edge.to] `
+                -ToPort "top" `
+                -EndArrow "4" `
+                -Label $connectorLabel
+        } else {
+            $connector = New-FlowConnector `
+                -Page $page `
+                -ConnectorMaster $masters.connector `
+                -FromShape $shapeById[$edge.from] `
+                -FromPort $fromPort `
+                -ToShape $shapeById[$edge.to] `
+                -ToPort "top" `
+                -EndArrow "4" `
+                -Label $connectorLabel
+        }
+
+        if ($edge.label -and $edge.labelPosition) {
+            $edgeLabel = New-EdgeLabelText -Page $page -Text ([string]$edge.label) -LabelPosition $edge.labelPosition
+            $frontShapes += $edgeLabel
         }
     }
 

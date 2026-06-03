@@ -22,8 +22,28 @@ export interface FlowEdge {
   readonly fromPort: FlowFromPort;
   readonly toPort: FlowToPort;
   readonly label?: string;
+  readonly routeNode?: FlowRouteNode;
+  readonly labelPosition?: FlowLabelPosition;
 }
 
+export interface FlowLabelPosition {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface FlowRouteNode {
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+  readonly orientation: FlowRouteOrientation;
+  readonly inPort: FlowRoutePort;
+  readonly outPort: FlowRoutePort;
+}
+
+export type FlowRouteOrientation = "vertical" | "horizontal";
+export type FlowRoutePort = "top" | "bottom" | "left" | "right";
 export type FlowFromPort = "bottom" | "right" | "left";
 export type FlowToPort = "top";
 
@@ -70,6 +90,7 @@ interface AddNodeOptions {
 
 interface AppendStatementsOptions {
   readonly allowDisconnectedFirstStatement?: boolean;
+  readonly insideLoopBody?: boolean;
 }
 
 interface SourceComment {
@@ -138,7 +159,7 @@ function appendStatements(
         pending = [];
       }
     } else {
-      pending = appendStatement(context, statement, normal);
+      pending = appendStatement(context, statement, normal, options);
       disconnectedStartUsed = true;
     }
   }
@@ -154,7 +175,7 @@ function appendStatement(
 ): FlowExit[] {
   switch (statement.type) {
     case "if_statement":
-      return appendIf(context, statement, incoming);
+      return appendIf(context, statement, incoming, options);
     case "for_statement":
       return appendForLoop(context, statement, incoming);
     case "while_statement":
@@ -191,14 +212,19 @@ function appendSimple(
   return [{ from: node.id, kind: exitKind }];
 }
 
-function appendIf(context: BuildContext, statement: SyntaxNode, incoming: FlowExit[]): FlowExit[] {
-  const decision = addNode(context, "decision", `if ${conditionText(statement)}`, statement);
+function appendIf(
+  context: BuildContext,
+  statement: SyntaxNode,
+  incoming: FlowExit[],
+  options: AppendStatementsOptions = {}
+): FlowExit[] {
+  const decision = addNode(context, "decision", conditionExpressionText(statement), statement);
   connectIncoming(context, incoming, decision.id);
 
   const consequence = statement.childForFieldName("consequence");
   const alternative = statement.childForFieldName("alternative");
   const thenIncoming = [{ from: decision.id, kind: "normal" as const, label: "Yes" }];
-  const thenExits = consequence ? appendStatement(context, consequence, thenIncoming) : thenIncoming;
+  let thenExits = consequence ? appendStatement(context, consequence, thenIncoming, options) : thenIncoming;
 
   let elseExits: FlowExit[];
   if (alternative) {
@@ -206,9 +232,24 @@ function appendIf(context: BuildContext, statement: SyntaxNode, incoming: FlowEx
     const elseIncoming = [
       { from: decision.id, kind: "normal" as const, label: "No", fromPort: "right" as const, toPort: "top" as const }
     ];
-    elseExits = elseBody ? appendStatement(context, elseBody, elseIncoming) : elseIncoming;
+    elseExits = elseBody ? appendStatement(context, elseBody, elseIncoming, options) : elseIncoming;
   } else {
     elseExits = [{ from: decision.id, kind: "normal", label: "No", fromPort: "right", toPort: "top" }];
+  }
+
+  if (options.insideLoopBody) {
+    const preferredRightBranch = loopRightBranch(thenExits, elseExits);
+    if (preferredRightBranch === "then") {
+      setDecisionBranchPort(context, decision.id, "Yes", "right");
+      setDecisionBranchPort(context, decision.id, "No", "bottom");
+      thenExits = setPendingBranchPort(thenExits, decision.id, "Yes", "right");
+      elseExits = setPendingBranchPort(elseExits, decision.id, "No", "bottom");
+    } else if (preferredRightBranch === "else") {
+      setDecisionBranchPort(context, decision.id, "Yes", "bottom");
+      setDecisionBranchPort(context, decision.id, "No", "right");
+      thenExits = setPendingBranchPort(thenExits, decision.id, "Yes", "bottom");
+      elseExits = setPendingBranchPort(elseExits, decision.id, "No", "right");
+    }
   }
 
   return [...thenExits, ...elseExits];
@@ -224,7 +265,7 @@ function appendLoop(context: BuildContext, statement: SyntaxNode, incoming: Flow
   }
 
   const bodyStartIndex = context.nodes.length;
-  const bodyExits = appendStatement(context, body, [{ from: decision.id, kind: "normal", label: "Yes" }]);
+  const bodyExits = appendStatement(context, body, [{ from: decision.id, kind: "normal", label: "Yes" }], { insideLoopBody: true });
   addLoopBodyGroup(context, decision.id, bodyStartIndex);
 
   const loopExits: FlowExit[] = [{ from: decision.id, kind: "normal", label: "No", fromPort: "right", toPort: "top" }];
@@ -255,7 +296,9 @@ function appendForLoop(context: BuildContext, statement: SyntaxNode, incoming: F
   connect(context, initNode.id, conditionNode.id);
 
   const bodyStartIndex = context.nodes.length;
-  const bodyExits = body ? appendStatement(context, body, [{ from: conditionNode.id, kind: "normal", label: "Yes" }]) : [];
+  const bodyExits = body
+    ? appendStatement(context, body, [{ from: conditionNode.id, kind: "normal", label: "Yes" }], { insideLoopBody: true })
+    : [];
   addLoopBodyGroup(context, conditionNode.id, bodyStartIndex);
 
   const updateNode = addNode(context, "process", forPartText(update, "(none)"), update ?? statement, { suppressComment: true });
@@ -295,7 +338,7 @@ function appendDoWhile(context: BuildContext, statement: SyntaxNode, incoming: F
   }
 
   const firstBodyIndex = context.nodes.length;
-  const bodyExits = appendStatement(context, body, incoming);
+  const bodyExits = appendStatement(context, body, incoming, { insideLoopBody: true });
   addLoopBodyGroup(context, "", firstBodyIndex);
   const firstBodyNode = context.nodes[firstBodyIndex];
   const decision = addNode(context, "decision", loopLabel(statement), statement);
@@ -320,7 +363,7 @@ function appendDoWhile(context: BuildContext, statement: SyntaxNode, incoming: F
 }
 
 function appendSwitch(context: BuildContext, statement: SyntaxNode, incoming: FlowExit[]): FlowExit[] {
-  const decision = addNode(context, "decision", `switch ${conditionText(statement)}`, statement);
+  const decision = addNode(context, "decision", `switch\n${conditionExpressionText(statement)}`, statement);
   connectIncoming(context, incoming, decision.id);
 
   const body = statement.childForFieldName("body");
@@ -329,33 +372,41 @@ function appendSwitch(context: BuildContext, statement: SyntaxNode, incoming: Fl
     return [{ from: decision.id, kind: "normal" }];
   }
 
-  const exits: FlowExit[] = [];
-  let fallthrough: FlowExit[] = [];
+  const caseEntries: { labels: string[]; bodyStatements: SyntaxNode[] }[] = [];
   let pendingCaseLabels: string[] = [];
-  for (const [index, caseNode] of cases.entries()) {
+  for (const caseNode of cases) {
     pendingCaseLabels.push(caseLabel(caseNode));
     const bodyStatements = caseBodyStatements(caseNode);
     if (bodyStatements.length === 0) {
       continue;
     }
+    caseEntries.push({ labels: pendingCaseLabels, bodyStatements });
+    pendingCaseLabels = [];
+  }
+  if (caseEntries.length === 0) {
+    return [{ from: decision.id, kind: "normal" }];
+  }
 
+  const exits: FlowExit[] = [];
+  let fallthrough: FlowExit[] = [];
+
+  for (const [index, entry] of caseEntries.entries()) {
     const firstCaseNodeIndex = context.nodes.length;
-    const caseExits = appendStatements(context, bodyStatements, [], { allowDisconnectedFirstStatement: true });
+    const caseExits = appendStatements(context, entry.bodyStatements, [], { allowDisconnectedFirstStatement: true });
     const firstCaseNode = context.nodes[firstCaseNodeIndex];
     if (!firstCaseNode) {
       continue;
     }
-    pendingCaseLabels.forEach((label, labelIndex) => {
-      connect(context, decision.id, firstCaseNode.id, label, labelIndex === 0 ? "bottom" : "right");
+    entry.labels.forEach((label) => {
+      connect(context, decision.id, firstCaseNode.id, label, "bottom");
     });
-    pendingCaseLabels = [];
     connectIncoming(context, fallthrough, firstCaseNode.id);
     fallthrough = [];
 
     for (const exit of caseExits) {
       if (exit.kind === "break") {
         exits.push({ from: exit.from, kind: "normal", label: "Break", fromPort: "right", toPort: "top" });
-      } else if (exit.kind === "normal" && index < cases.length - 1) {
+      } else if (exit.kind === "normal" && index < caseEntries.length - 1) {
         fallthrough.push({ from: exit.from, kind: "normal", label: "Fallthrough", fromPort: "right", toPort: "top" });
       } else {
         exits.push(exit);
@@ -367,6 +418,51 @@ function appendSwitch(context: BuildContext, statement: SyntaxNode, incoming: Fl
 
 function appendCaseBody(context: BuildContext, caseNode: SyntaxNode, incoming: FlowExit[]): FlowExit[] {
   return appendStatements(context, caseBodyStatements(caseNode), incoming);
+}
+
+function loopRightBranch(thenExits: FlowExit[], elseExits: FlowExit[]): "then" | "else" | undefined {
+  const thenPriority = loopBranchPriority(thenExits);
+  const elsePriority = loopBranchPriority(elseExits);
+  if (thenPriority > elsePriority) {
+    return "then";
+  }
+  if (elsePriority > thenPriority) {
+    return "else";
+  }
+  return undefined;
+}
+
+function loopBranchPriority(exits: FlowExit[]): number {
+  if (exits.some((exit) => exit.kind === "break")) {
+    return 4;
+  }
+  if (exits.some((exit) => exit.kind === "return")) {
+    return 3;
+  }
+  if (exits.some((exit) => exit.kind === "continue")) {
+    return 2;
+  }
+  if (exits.some((exit) => exit.kind === "normal")) {
+    return 1;
+  }
+  return 0;
+}
+
+function setDecisionBranchPort(context: BuildContext, decisionId: string, label: string, fromPort: FlowFromPort): void {
+  for (const [index, edge] of context.edges.entries()) {
+    if (edge.from === decisionId && edge.label === label) {
+      context.edges[index] = { ...edge, fromPort };
+    }
+  }
+}
+
+function setPendingBranchPort(exits: FlowExit[], decisionId: string, label: string, fromPort: FlowFromPort): FlowExit[] {
+  return exits.map((exit) => {
+    if (exit.from === decisionId && exit.label === label) {
+      return { ...exit, fromPort };
+    }
+    return exit;
+  });
 }
 
 function addNode(
@@ -528,6 +624,38 @@ function cleanCommentText(text: string): string {
 function conditionText(statement: SyntaxNode): string {
   const condition = statement.childForFieldName("condition");
   return condition ? normalizeWhitespace(condition.text) : "(condition)";
+}
+
+function conditionExpressionText(statement: SyntaxNode): string {
+  return stripEnclosingParentheses(conditionText(statement));
+}
+
+function stripEnclosingParentheses(text: string): string {
+  let result = normalizeWhitespace(text);
+  while (isWrappedBySingleParenthesisPair(result)) {
+    result = normalizeWhitespace(result.slice(1, -1));
+  }
+  return result;
+}
+
+function isWrappedBySingleParenthesisPair(text: string): boolean {
+  if (!text.startsWith("(") || !text.endsWith(")")) {
+    return false;
+  }
+
+  let depth = 0;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === "(") {
+      depth++;
+    } else if (char === ")") {
+      depth--;
+      if (depth < 0 || (depth === 0 && index < text.length - 1)) {
+        return false;
+      }
+    }
+  }
+  return depth === 0;
 }
 
 function loopLabel(statement: SyntaxNode): string {

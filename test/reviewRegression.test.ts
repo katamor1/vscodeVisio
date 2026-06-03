@@ -24,6 +24,10 @@ const TEST_KIND_WIDTH: Record<string, number> = {
 };
 const TEST_GROUP_PADDING_X = 0.45;
 
+function testNodeHeight(label: string): number {
+  return Math.max(0.55, 0.34 * label.split("\n").length + 0.25);
+}
+
 test("switch case without break falls through to the next case node", async () => {
   const flow = await buildFlow(`int f(int x) {
     switch (x) {
@@ -165,7 +169,7 @@ test("switch cases remain edge labels instead of process nodes", async () => {
         edge.from === switchNode.id &&
         edge.to === sharedCaseBody.id &&
         edge.label === "case 1" &&
-        edge.fromPort === "right" &&
+        edge.fromPort === "bottom" &&
         edge.toPort === "top"
     )
   );
@@ -178,6 +182,209 @@ test("switch cases remain edge labels instead of process nodes", async () => {
         edge.fromPort === "bottom" &&
         edge.toPort === "top"
     )
+  );
+});
+
+test("layout places switch default case under the switch decision and other cases to the right", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    switch (x) {
+      case 1:
+        x += 1;
+        break;
+      case 2:
+        x += 2;
+        break;
+      default:
+        x = 9;
+        break;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const switchNode = flow.nodes.find((node) => node.kind === "decision" && node.label === "switch\nx");
+  const firstCaseBody = flow.nodes.find((node) => node.label === "x += 1");
+  const secondCaseBody = flow.nodes.find((node) => node.label === "x += 2");
+  const defaultBody = flow.nodes.find((node) => node.label === "x = 9");
+
+  assert.ok(switchNode);
+  assert.ok(firstCaseBody);
+  assert.ok(secondCaseBody);
+  assert.ok(defaultBody);
+  assert.equal(laidOut.positions[defaultBody.id].x, laidOut.positions[switchNode.id].x);
+  assert.ok(laidOut.positions[defaultBody.id].y < laidOut.positions[switchNode.id].y);
+  assert.ok(laidOut.positions[firstCaseBody.id].x > laidOut.positions[switchNode.id].x);
+  assert.ok(laidOut.positions[secondCaseBody.id].x > laidOut.positions[switchNode.id].x);
+  assert.ok(flow.edges.some((edge) => edge.from === switchNode.id && edge.to === defaultBody.id && edge.label === "default" && edge.fromPort === "bottom"));
+  assert.ok(flow.edges.some((edge) => edge.from === switchNode.id && edge.to === firstCaseBody.id && edge.label === "case 1" && edge.fromPort === "bottom"));
+  assert.ok(flow.edges.some((edge) => edge.from === switchNode.id && edge.to === secondCaseBody.id && edge.label === "case 2" && edge.fromPort === "bottom"));
+  assert.deepEqual(
+    new Set(flow.edges.filter((edge) => edge.from === switchNode.id && edge.label).map((edge) => edge.fromPort)),
+    new Set(["bottom"])
+  );
+});
+
+test("layout places the last switch case under the switch decision when default is omitted", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    switch (x) {
+      case 1:
+        x += 1;
+        break;
+      case 2:
+        x += 2;
+        break;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const switchNode = flow.nodes.find((node) => node.kind === "decision" && node.label === "switch\nx");
+  const firstCaseBody = flow.nodes.find((node) => node.label === "x += 1");
+  const lastCaseBody = flow.nodes.find((node) => node.label === "x += 2");
+
+  assert.ok(switchNode);
+  assert.ok(firstCaseBody);
+  assert.ok(lastCaseBody);
+  assert.equal(laidOut.positions[lastCaseBody.id].x, laidOut.positions[switchNode.id].x);
+  assert.ok(laidOut.positions[lastCaseBody.id].y < laidOut.positions[switchNode.id].y);
+  assert.ok(laidOut.positions[firstCaseBody.id].x > laidOut.positions[switchNode.id].x);
+  assert.ok(flow.edges.some((edge) => edge.from === switchNode.id && edge.to === lastCaseBody.id && edge.label === "case 2" && edge.fromPort === "bottom"));
+  assert.ok(flow.edges.some((edge) => edge.from === switchNode.id && edge.to === firstCaseBody.id && edge.label === "case 1" && edge.fromPort === "bottom"));
+  assert.deepEqual(
+    new Set(flow.edges.filter((edge) => edge.from === switchNode.id && edge.label).map((edge) => edge.fromPort)),
+    new Set(["bottom"])
+  );
+});
+
+test("layout pins switch case labels near their branch rows instead of connector midpoints", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    switch (x) {
+      case 1:
+        x += 1;
+        break;
+      case 2:
+        x += 2;
+        break;
+      default:
+        x = 9;
+        break;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const switchNode = flow.nodes.find((node) => node.kind === "decision" && node.label === "switch\nx");
+  const firstCaseBody = flow.nodes.find((node) => node.label === "x += 1");
+  const secondCaseBody = flow.nodes.find((node) => node.label === "x += 2");
+  const defaultBody = flow.nodes.find((node) => node.label === "x = 9");
+
+  assert.ok(switchNode);
+  assert.ok(firstCaseBody);
+  assert.ok(secondCaseBody);
+  assert.ok(defaultBody);
+
+  const case1 = laidOut.edges.find((edge) => edge.from === switchNode.id && edge.to === firstCaseBody.id && edge.label === "case 1");
+  const case2 = laidOut.edges.find((edge) => edge.from === switchNode.id && edge.to === secondCaseBody.id && edge.label === "case 2");
+  const defaultEdge = laidOut.edges.find((edge) => edge.from === switchNode.id && edge.to === defaultBody.id && edge.label === "default");
+  type PositionedEdge = NonNullable<typeof case1> & {
+    readonly labelPosition?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+  };
+  const case1Edge = case1 as PositionedEdge | undefined;
+  const case2Edge = case2 as PositionedEdge | undefined;
+  const defaultLabelEdge = defaultEdge as PositionedEdge | undefined;
+
+  assert.ok(case1Edge?.labelPosition);
+  assert.ok(case2Edge?.labelPosition);
+  assert.ok(defaultLabelEdge?.labelPosition);
+  assert.ok(case1Edge.labelPosition.x > laidOut.positions[switchNode.id].x);
+  assert.ok(case1Edge.labelPosition.x < laidOut.positions[firstCaseBody.id].x);
+  assert.ok(defaultLabelEdge.labelPosition.x > laidOut.positions[switchNode.id].x);
+  assert.ok(defaultLabelEdge.labelPosition.x < laidOut.positions[firstCaseBody.id].x);
+  assert.ok(case1Edge.labelPosition.y > case2Edge.labelPosition.y);
+  assert.ok(case2Edge.labelPosition.y > defaultLabelEdge.labelPosition.y);
+  assert.ok(defaultLabelEdge.labelPosition.y > laidOut.positions[defaultBody.id].y);
+});
+
+test("layout adds extra vertical clearance around decision diamonds", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    x = 0;
+    x += 1;
+    if (x > 0) {
+      x += 2;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const firstProcess = flow.nodes.find((node) => node.label === "x = 0");
+  const secondProcess = flow.nodes.find((node) => node.label === "x += 1");
+  const decision = flow.nodes.find((node) => node.kind === "decision" && node.label === "x > 0");
+  const branchProcess = flow.nodes.find((node) => node.label === "x += 2");
+
+  assert.ok(firstProcess);
+  assert.ok(secondProcess);
+  assert.ok(decision);
+  assert.ok(branchProcess);
+
+  const verticalClearance = (upper: typeof firstProcess, lower: typeof firstProcess) =>
+    laidOut.positions[upper.id].y -
+    laidOut.positions[lower.id].y -
+    testNodeHeight(upper.label) / 2 -
+    testNodeHeight(lower.label) / 2;
+  const normalProcessClearance = verticalClearance(firstProcess, secondProcess);
+  const aboveDecisionClearance = verticalClearance(secondProcess, decision);
+  const belowDecisionClearance = verticalClearance(decision, branchProcess);
+
+  assert.ok(aboveDecisionClearance >= normalProcessClearance * 1.8);
+  assert.ok(belowDecisionClearance >= normalProcessClearance * 1.8);
+});
+
+test("layout pins yes and no labels near their decision diamond", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    if (x > 0) {
+      x += 1;
+    } else {
+      x += 2;
+    }
+    x += 3;
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const decision = flow.nodes.find((node) => node.kind === "decision" && node.label === "x > 0");
+  const yesTarget = flow.nodes.find((node) => node.label === "x += 1");
+  const noTarget = flow.nodes.find((node) => node.label === "x += 2");
+
+  assert.ok(decision);
+  assert.ok(yesTarget);
+  assert.ok(noTarget);
+
+  const yesEdge = laidOut.edges.find((edge) => edge.from === decision.id && edge.to === yesTarget.id && edge.label === "Yes");
+  const noEdge = laidOut.edges.find((edge) => edge.from === decision.id && edge.to === noTarget.id && edge.label === "No");
+  type PositionedEdge = NonNullable<typeof yesEdge> & {
+    readonly labelPosition?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+  };
+  const positionedYes = yesEdge as PositionedEdge | undefined;
+  const positionedNo = noEdge as PositionedEdge | undefined;
+
+  assert.ok(positionedYes?.labelPosition);
+  assert.ok(positionedNo?.labelPosition);
+  assert.ok(
+    Math.abs(positionedYes.labelPosition.x - laidOut.positions[decision.id].x) < 0.8,
+    "bottom Yes label should stay near the decision x coordinate"
+  );
+  assert.ok(
+    positionedYes.labelPosition.y < laidOut.positions[decision.id].y &&
+      positionedYes.labelPosition.y > laidOut.positions[yesTarget.id].y,
+    "bottom Yes label should sit between the decision and its target"
+  );
+  assert.ok(
+    positionedNo.labelPosition.x > laidOut.positions[decision.id].x,
+    "right No label should sit to the right of the decision"
+  );
+  assert.ok(
+    Math.abs(positionedNo.labelPosition.y - laidOut.positions[decision.id].y) < 0.4,
+    "right No label should stay near the decision y coordinate"
   );
 });
 
@@ -207,7 +414,28 @@ test("switch case labels connect to the first statement inside braced case bodie
   assert.ok(flow.edges.some((edge) => edge.from === switchNode.id && edge.to === defaultBody.id && edge.label === "default"));
 });
 
-test("layout routes upward loop edges from left while preserving non-upward right exits", async () => {
+test("decision labels use compact condition text for if and multiline expression text for switch", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    if (x > 0) {
+      x++;
+    }
+    switch (x) {
+      case 1:
+        x += 2;
+        break;
+      default:
+        x = 0;
+    }
+    return x;
+  }`);
+
+  assert.ok(flow.nodes.some((node) => node.kind === "decision" && node.label === "x > 0"));
+  assert.ok(flow.nodes.some((node) => node.kind === "decision" && node.label === "switch\nx"));
+  assert.equal(flow.nodes.some((node) => node.label === "if (x > 0)"), false);
+  assert.equal(flow.nodes.some((node) => node.label === "switch (x)"), false);
+});
+
+test("layout routes upward loop edges from bottom while preserving non-upward right exits", async () => {
   const flow = await buildFlow(`int f(int x) {
     while (x < 5) {
       if (x == 3) {
@@ -257,10 +485,10 @@ test("layout routes upward loop edges from left while preserving non-upward righ
   const doWhileBackEdge = laidOut.edges.find((edge) => edge.from === doCondition.id && edge.to === doBody.id && edge.label === "Yes");
   const nonUpwardNoEdge = laidOut.edges.find((edge) => edge.from === ifNode.id && edge.to === elseNode.id && edge.label === "No");
 
-  assert.equal(whileBackEdge?.fromPort, "left");
-  assert.equal(continueBackEdge?.fromPort, "left");
-  assert.equal(forUpdateBackEdge?.fromPort, "left");
-  assert.equal(doWhileBackEdge?.fromPort, "left");
+  assert.equal(whileBackEdge?.fromPort, "bottom");
+  assert.equal(continueBackEdge?.fromPort, "bottom");
+  assert.equal(forUpdateBackEdge?.fromPort, "bottom");
+  assert.equal(doWhileBackEdge?.fromPort, "bottom");
   assert.equal(nonUpwardNoEdge?.fromPort, "right");
   assert.ok(laidOut.edges.every((edge) => edge.toPort === "top"));
 });
@@ -340,6 +568,14 @@ test("extension package main points at the compiled entrypoint", () => {
   assert.equal(fs.existsSync(path.join(__dirname, "..", "..", "LICENSE.txt")), true);
 });
 
+test("extension shows a progress notification as soon as Visio generation starts", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "..", "src", "extension.ts"), "utf8");
+
+  assert.match(source, /vscode\.window\.withProgress/);
+  assert.match(source, /location:\s*vscode\.ProgressLocation\.Notification/);
+  assert.match(source, /Visio: フローチャートを生成しています/);
+});
+
 test("whole function flow uses function signature start label and return end label", async () => {
   const fixture = readSampleCommentsFixture();
   const flow = await buildFlow(fixture);
@@ -366,10 +602,10 @@ test("for loop split labels omit prefixes while keeping the condition under for"
   assert.equal(flow.nodes.some((node) => node.label.startsWith("for update:")), false);
 });
 
-test("no-else if exits inside for loops keep the No branch on the right port", async () => {
+test("no-else break guards inside for loops use the right port for the break branch", async () => {
   const fixture = readSampleCommentsFixture();
   const flow = await buildFlow(fixture);
-  const decision = flow.nodes.find((node) => node.kind === "decision" && node.label === "if (*result > 100)");
+  const decision = flow.nodes.find((node) => node.kind === "decision" && node.label === "*result > 100");
   const thenNode = flow.nodes.find((node) => node.label === "*result = 100");
   const update = flow.nodes.find((node) => node.label === "i++");
 
@@ -382,7 +618,7 @@ test("no-else if exits inside for loops keep the No branch on the right port", a
         edge.from === decision.id &&
         edge.to === thenNode.id &&
         edge.label === "Yes" &&
-        edge.fromPort === "bottom" &&
+        edge.fromPort === "right" &&
         edge.toPort === "top"
     )
   );
@@ -392,12 +628,12 @@ test("no-else if exits inside for loops keep the No branch on the right port", a
         edge.from === decision.id &&
         edge.to === update.id &&
         edge.label === "No" &&
-        edge.fromPort === "right" &&
+        edge.fromPort === "bottom" &&
         edge.toPort === "top"
     )
   );
   assert.equal(
-    flow.edges.some((edge) => edge.from === decision.id && edge.to === update.id && edge.fromPort === "bottom"),
+    flow.edges.some((edge) => edge.from === decision.id && edge.to === thenNode.id && edge.fromPort === "bottom"),
     false
   );
 });
@@ -407,7 +643,7 @@ test("standalone comments are side notes only and are not process nodes", async 
   const flow = await buildFlow(fixture);
   const resultInit = flow.nodes.find((node) => node.label === "*result = 0");
   const sleep = flow.nodes.find((node) => node.label === "Sleep(1000)");
-  const flagDecision = flow.nodes.find((node) => node.kind === "decision" && node.label === "if (flag)");
+  const flagDecision = flow.nodes.find((node) => node.kind === "decision" && node.label === "flag");
   const waitLoop = flow.nodes.find((node) => node.kind === "decision" && node.label === "while (g_flag)");
 
   assert.equal(flow.nodes.some((node) => node.kind === "process" && node.label.trim().startsWith("//")), false);
@@ -558,6 +794,212 @@ test("loop bodies are exposed as rectangular groups in layout output", async () 
   assert.ok(laidOut.groupBoxes.every((box) => box.right > box.left && box.top > box.bottom));
 });
 
+test("layout routes loop-back edges through dummy nodes outside only their own loop box", async () => {
+  const fixture = readSampleCommentsFixture();
+  const flow = await buildFlow(fixture);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const upwardEdges = laidOut.edges.filter((edge) => laidOut.positions[edge.to]?.y > laidOut.positions[edge.from]?.y);
+
+  assert.ok(upwardEdges.length > 0);
+  for (const edge of upwardEdges) {
+    const from = laidOut.positions[edge.from];
+    const to = laidOut.positions[edge.to];
+    const ownLoopBox = laidOut.groupBoxes.find((box) => box.ownerNodeId === edge.to || box.ownerNodeId === edge.from);
+    const containingBoxes = ownLoopBox
+      ? laidOut.groupBoxes.filter(
+          (box) =>
+            box.id !== ownLoopBox.id &&
+            box.left < ownLoopBox.left &&
+            box.right > ownLoopBox.right &&
+            box.top > ownLoopBox.top &&
+            box.bottom < ownLoopBox.bottom
+        )
+      : [];
+    const routeNode = edge.routeNode;
+
+    assert.ok(ownLoopBox, `missing owning loop box for ${edge.from}->${edge.to}`);
+    assert.ok(routeNode, `missing loop-back dummy node for ${edge.from}->${edge.to}`);
+    assert.match(routeNode.id, /^route-/);
+    assert.equal((routeNode as typeof routeNode & { orientation?: string }).orientation, "vertical");
+    assert.equal((routeNode as typeof routeNode & { inPort?: string }).inPort, "bottom");
+    assert.equal((routeNode as typeof routeNode & { outPort?: string }).outPort, "top");
+    assert.ok(routeNode.x < ownLoopBox.left, `route node ${edge.from}->${edge.to} should stay left of its own loop box`);
+    assert.ok(
+      containingBoxes.every((box) => routeNode.x > box.left),
+      `nested route node ${edge.from}->${edge.to} should remain inside containing loop boxes`
+    );
+    assert.ok(routeNode.y > Math.min(from.y, to.y));
+    assert.ok(routeNode.y <= Math.max(from.y, to.y) + 0.5);
+  }
+});
+
+test("layout routes loop condition exits through right-side dummy nodes outside their loop box", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    while (x < 10) {
+      x++;
+    }
+    for (int i = 0; i < 3; i++) {
+      x += i;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const whileCondition = laidOut.nodes.find((node) => node.kind === "decision" && node.label.includes("x < 10"));
+  const forCondition = laidOut.nodes.find((node) => node.kind === "decision" && node.label === "for\ni < 3");
+  const returnNode = laidOut.nodes.find((node) => node.kind === "terminator" && node.label === "return x");
+  const forInit = laidOut.nodes.find((node) => node.label === "int i = 0");
+
+  assert.ok(whileCondition);
+  assert.ok(forCondition);
+  assert.ok(returnNode);
+  assert.ok(forInit);
+
+  for (const [condition, target] of [
+    [whileCondition, forInit],
+    [forCondition, returnNode]
+  ] as const) {
+    const loopBox = laidOut.groupBoxes.find((box) => box.ownerNodeId === condition.id);
+    const exitEdge = laidOut.edges.find((edge) => edge.from === condition.id && edge.to === target.id && edge.label === "No");
+
+    assert.ok(loopBox, `missing loop box for ${condition.label}`);
+    assert.ok(exitEdge, `missing condition exit edge for ${condition.label}`);
+    assert.equal(exitEdge.fromPort, "right");
+    assert.ok(exitEdge.routeNode, `missing right-side dummy node for ${condition.label}`);
+    assert.equal((exitEdge.routeNode as typeof exitEdge.routeNode & { orientation?: string }).orientation, "vertical");
+    assert.equal((exitEdge.routeNode as typeof exitEdge.routeNode & { inPort?: string }).inPort, "top");
+    assert.equal((exitEdge.routeNode as typeof exitEdge.routeNode & { outPort?: string }).outPort, "bottom");
+    assert.ok(exitEdge.routeNode.x > loopBox.right, `dummy node for ${condition.label} should be right of its loop box`);
+    assert.ok(
+      laidOut.positions[target.id].x - TEST_KIND_WIDTH[target.kind] / 2 >= exitEdge.routeNode.x,
+      `target node for ${condition.label} should be fully right of its right-side dummy node`
+    );
+    assert.ok(
+      laidOut.positions[target.id].x >= exitEdge.routeNode.x,
+      `target node for ${condition.label} should be at or right of its right-side dummy node`
+    );
+    assert.ok(exitEdge.routeNode.y < loopBox.top, `dummy node for ${condition.label} should stay beside the loop box`);
+    assert.ok(exitEdge.routeNode.y > loopBox.bottom, `dummy node for ${condition.label} should stay beside the loop box`);
+  }
+});
+
+test("layout keeps extra vertical clearance before loop condition inputs", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    x = x + 1;
+    while (x < 10) {
+      x++;
+    }
+    for (int i = 0; i < 3; i++) {
+      x += i;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const beforeWhile = laidOut.nodes.find((node) => node.label === "x = x + 1");
+  const whileCondition = laidOut.nodes.find((node) => node.kind === "decision" && node.label.includes("x < 10"));
+  const forInit = laidOut.nodes.find((node) => node.label === "int i = 0");
+  const forCondition = laidOut.nodes.find((node) => node.kind === "decision" && node.label === "for\ni < 3");
+
+  assert.ok(beforeWhile);
+  assert.ok(whileCondition);
+  assert.ok(forInit);
+  assert.ok(forCondition);
+  assert.ok(
+    laidOut.positions[beforeWhile.id].y - laidOut.positions[whileCondition.id].y > 1.3,
+    "while condition should have more than the normal vertical spacing from upstream input"
+  );
+  assert.ok(
+    laidOut.positions[forInit.id].y - laidOut.positions[forCondition.id].y > 1.3,
+    "for condition should have more than the normal vertical spacing from upstream input"
+  );
+});
+
+test("layout keeps loop condition diamonds clear of their loop body boxes", async () => {
+  const fixture = fs.readFileSync(path.join(__dirname, "..", "..", "test", "fixtures", "four-level-80-step.c"), "utf8");
+  const flow = await buildFlow(fixture);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const topTestedLoopBoxes = laidOut.groupBoxes.filter((box) => {
+    const owner = laidOut.positions[box.ownerNodeId];
+    return owner !== undefined && owner.y > box.top;
+  });
+
+  assert.ok(topTestedLoopBoxes.length > 0);
+  for (const box of topTestedLoopBoxes) {
+    const owner = laidOut.nodes.find((node) => node.id === box.ownerNodeId);
+    assert.ok(owner);
+    const ownerBottom = laidOut.positions[owner.id].y - testNodeHeight(owner.label) / 2;
+    assert.ok(
+      ownerBottom >= box.top + 0.12,
+      `loop condition ${owner.label} should not overlap its loop body box`
+    );
+  }
+});
+
+test("layout keeps nested loop condition exit targets right of finalized dummy nodes", async () => {
+  const fixture = fs.readFileSync(path.join(__dirname, "..", "..", "test", "fixtures", "four-level-80-step.c"), "utf8");
+  const flow = await buildFlow(fixture);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const conditionExitEdges = laidOut.edges.filter((edge) => {
+    const box = laidOut.groupBoxes.find((groupBox) => groupBox.ownerNodeId === edge.from && !groupBox.nodeIds.includes(edge.to));
+    return box !== undefined && edge.routeNode !== undefined;
+  });
+
+  assert.ok(conditionExitEdges.length > 0);
+  for (const edge of conditionExitEdges) {
+    const target = laidOut.nodes.find((node) => node.id === edge.to);
+    assert.ok(target);
+    assert.ok(edge.routeNode);
+    assert.equal((edge.routeNode as typeof edge.routeNode & { orientation?: string }).orientation, "vertical");
+    assert.equal((edge.routeNode as typeof edge.routeNode & { inPort?: string }).inPort, "top");
+    assert.equal((edge.routeNode as typeof edge.routeNode & { outPort?: string }).outPort, "bottom");
+    assert.ok(
+      laidOut.positions[edge.to].x - TEST_KIND_WIDTH[target.kind] / 2 >= edge.routeNode.x,
+      `target ${edge.to} should be fully right of finalized route node for ${edge.from}->${edge.to}`
+    );
+  }
+});
+
+test("sample.c places counter declaration and generated return to the right of loop exits", async () => {
+  const sample = fs.readFileSync(path.join(__dirname, "..", "..", "samples", "sample.c"), "utf8");
+  const flow = await buildFlow(sample);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const counter = laidOut.nodes.find((node) => node.label === "int counter = 0");
+  const generatedReturn = laidOut.nodes.find((node) => node.kind === "terminator" && node.label === "return" && !node.source);
+
+  assert.ok(counter);
+  assert.ok(generatedReturn);
+  assert.equal(laidOut.groupBoxes.some((box) => box.nodeIds.includes(counter.id)), false);
+  assert.equal(laidOut.groupBoxes.some((box) => box.nodeIds.includes(generatedReturn.id)), false);
+
+  for (const target of [counter, generatedReturn]) {
+    const routeEdge = laidOut.edges.find(
+      (edge) =>
+        edge.to === target.id &&
+        edge.routeNode !== undefined &&
+        laidOut.groupBoxes.some((box) => box.ownerNodeId === edge.from && !box.nodeIds.includes(edge.to))
+    );
+    assert.ok(routeEdge, `missing loop exit route to ${target.label}`);
+    assert.ok(routeEdge.routeNode);
+    assert.equal((routeEdge.routeNode as typeof routeEdge.routeNode & { orientation?: string }).orientation, "vertical");
+    assert.equal((routeEdge.routeNode as typeof routeEdge.routeNode & { inPort?: string }).inPort, "top");
+    assert.equal((routeEdge.routeNode as typeof routeEdge.routeNode & { outPort?: string }).outPort, "bottom");
+    assert.ok(
+      laidOut.positions[target.id].x - TEST_KIND_WIDTH[target.kind] / 2 >= routeEdge.routeNode.x,
+      `${target.label} should be fully right of its loop exit dummy node`
+    );
+  }
+
+  assert.ok(
+    laidOut.positions[counter.id].y > laidOut.positions[generatedReturn.id].y,
+    "counter declaration should remain above the generated terminal return"
+  );
+});
+
 test("Visio renderer marks connector end direction with arrowheads", () => {
   const script = fs.readFileSync(path.join(__dirname, "..", "..", "scripts", "New-VisioFlowchart.ps1"), "utf8");
 
@@ -585,14 +1027,34 @@ test("Visio renderer creates and uses named flow connection points", () => {
   assert.doesNotMatch(script, /GlueTo\(\$shapeById\[\$edge\.to\]\.CellsU\("PinX"\)\)/);
 });
 
-test("Visio renderer keeps loop-back edges as dynamic connectors from the left port", () => {
+test("Visio renderer splits routed edges through slender oriented dummy nodes", () => {
   const script = fs.readFileSync(path.join(__dirname, "..", "..", "scripts", "New-VisioFlowchart.ps1"), "utf8");
 
-  assert.doesNotMatch(script, /New-LeftLoopBackPolyline/);
+  assert.match(script, /New-RouteDummyNode/);
+  assert.match(script, /Get-RouteDummyPorts/);
+  assert.match(script, /RouteNode\.orientation/);
+  assert.match(script, /RouteNode\.inPort/);
+  assert.match(script, /RouteNode\.outPort/);
+  assert.match(script, /"vertical"\s+\{\s+\$widthFormula = "0\.005 in"\s+\$heightFormula = "0\.24 in"/);
+  assert.match(script, /\$heightFormula = "0\.005 in"/);
+  assert.match(script, /"vertical"\s+\{\s+return @\{ In = "bottom"; Out = "top" \}/);
+  assert.match(script, /In = \[string\]\$RouteNode\.inPort/);
+  assert.match(script, /Out = \[string\]\$RouteNode\.outPort/);
+  assert.match(script, /return @\{ In = "left"; Out = "right" \}/);
+  assert.match(script, /LinePattern" -Formula "1"/);
+  assert.match(script, /LineColor" -Formula "RGB\(0,0,0\)"/);
+  assert.match(script, /\$edge\.routeNode/);
+  assert.match(script, /\$firstConnector/);
+  assert.match(script, /\$secondConnector/);
+  assert.match(script, /-EndArrow "0"/);
+  assert.match(script, /-EndArrow "4"/);
+  assert.match(script, /\$Page\.Drop\(\$ConnectorMaster, 0, 0\)/);
+  assert.doesNotMatch(script, /New-RoutedPolyline/);
   assert.doesNotMatch(script, /DrawPolyline/);
+  assert.doesNotMatch(script, /New-LeftLoopBackPolyline/);
   assert.doesNotMatch(script, /Get-LoopBackLeftX/);
   assert.match(script, /"left"\s+\{\s+return \$Shape\.CellsU\("Connections\.FlowLeft\.X"\)\s+\}/);
-  assert.match(script, /\$connector = \$page\.Drop\(\$masters\.connector, 0, 0\)/);
+  assert.doesNotMatch(script, /-ToPort "right"/);
 });
 
 test("Visio renderer configures dynamic connector routing and keeps nodes in front", () => {
@@ -637,6 +1099,118 @@ test("break and continue are rendered as decision diamonds while preserving loop
   assert.equal(continueNode?.kind, "decision");
   assert.ok(flow.edges.some((edge) => edge.from === continueNode?.id && edge.label === "Continue"));
   assert.ok(flow.edges.some((edge) => edge.from === breakNode?.id && edge.to !== continueNode?.id));
+});
+
+test("loop break return and continue paths use right decision outputs before loop-back paths", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    while (x < 10) {
+      if (x == 5) {
+        break;
+      }
+      if (x == 7) {
+        return x;
+      }
+      if (x == 6) {
+        continue;
+      }
+      x++;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+
+  const breakGuard = flow.nodes.find((node) => node.kind === "decision" && node.label === "x == 5");
+  const breakNode = flow.nodes.find((node) => node.label === "break");
+  const returnGuard = flow.nodes.find((node) => node.kind === "decision" && node.label === "x == 7");
+  const returnNodes = flow.nodes.filter((node) => node.label === "return x" && node.source);
+  const loopReturn = returnNodes[0];
+  const continueGuard = flow.nodes.find((node) => node.kind === "decision" && node.label === "x == 6");
+  const continueNode = flow.nodes.find((node) => node.label === "continue");
+  const increment = flow.nodes.find((node) => node.label === "x++");
+  const finalReturn = returnNodes[1];
+
+  assert.ok(breakGuard);
+  assert.ok(breakNode);
+  assert.ok(returnGuard);
+  assert.ok(loopReturn);
+  assert.ok(continueGuard);
+  assert.ok(continueNode);
+  assert.ok(increment);
+  assert.ok(finalReturn);
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === breakGuard.id &&
+        edge.to === breakNode.id &&
+        edge.label === "Yes" &&
+        edge.fromPort === "right" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === breakGuard.id &&
+        edge.to === returnGuard.id &&
+        edge.label === "No" &&
+        edge.fromPort === "bottom" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === breakNode.id &&
+        edge.to === finalReturn.id &&
+        edge.label === "Break" &&
+        edge.fromPort === "right" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === returnGuard.id &&
+        edge.to === loopReturn.id &&
+        edge.label === "Yes" &&
+        edge.fromPort === "right" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === returnGuard.id &&
+        edge.to === continueGuard.id &&
+        edge.label === "No" &&
+        edge.fromPort === "bottom" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === continueGuard.id &&
+        edge.to === continueNode.id &&
+        edge.label === "Yes" &&
+        edge.fromPort === "right" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(
+    flow.edges.some(
+      (edge) =>
+        edge.from === continueGuard.id &&
+        edge.to === increment.id &&
+        edge.label === "No" &&
+        edge.fromPort === "bottom" &&
+        edge.toPort === "top"
+    )
+  );
+  assert.ok(laidOut.positions[breakNode.id].x > laidOut.positions[breakGuard.id].x);
+  assert.ok(laidOut.positions[loopReturn.id].x > laidOut.positions[returnGuard.id].x);
+  assert.ok(laidOut.positions[continueNode.id].x > laidOut.positions[continueGuard.id].x);
 });
 
 test("for loops are split into initializer, condition, and update steps", async () => {
@@ -699,9 +1273,103 @@ test("layout places comment text to the right of the associated process node", a
   assert.equal(laidOut.commentPositions[processNode.id].y, laidOut.positions[processNode.id].y);
 });
 
+test("layout places decision comments diagonally above the right output lane", async () => {
+  const flow = await buildFlow(`int f(int x) {
+    if (x > 0) { // decision comment
+      x--;
+    }
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const decision = flow.nodes.find((node) => node.kind === "decision" && node.label.includes("x > 0"));
+
+  assert.ok(decision);
+  const comment = laidOut.commentPositions[decision.id] as (typeof laidOut.commentPositions)[string] & {
+    height?: number;
+  };
+  assert.ok(comment);
+  assert.ok(comment.height);
+  assert.ok(comment.x > laidOut.positions[decision.id].x);
+  assert.ok(
+    comment.y - comment.height / 2 > laidOut.positions[decision.id].y,
+    "decision comment bottom should sit above the decision center line"
+  );
+});
+
+test("layout sizes comment text boxes from comment text length and line count", async () => {
+  const flow = await buildFlow(`int f(void) {
+    // short
+    x += 1;
+    // this is a much longer comment text that should need a wider text box
+    x += 2;
+    // first line
+    // second line
+    x += 3;
+    return x;
+  }`);
+  const { layoutFlow } = await import("../src/layout/layoutGraph");
+  const laidOut = layoutFlow(flow);
+  const shortNode = flow.nodes.find((node) => node.label === "x += 1");
+  const longNode = flow.nodes.find((node) => node.label === "x += 2");
+  const multilineNode = flow.nodes.find((node) => node.label === "x += 3");
+
+  assert.ok(shortNode);
+  assert.ok(longNode);
+  assert.ok(multilineNode);
+
+  const shortComment = laidOut.commentPositions[shortNode.id] as (typeof laidOut.commentPositions)[string] & {
+    width?: number;
+    height?: number;
+  };
+  const longComment = laidOut.commentPositions[longNode.id] as (typeof laidOut.commentPositions)[string] & {
+    width?: number;
+    height?: number;
+  };
+  const multilineComment = laidOut.commentPositions[multilineNode.id] as (typeof laidOut.commentPositions)[string] & {
+    width?: number;
+    height?: number;
+  };
+
+  assert.ok(shortComment.width && shortComment.height);
+  assert.ok(longComment.width && longComment.height);
+  assert.ok(multilineComment.width && multilineComment.height);
+  assert.ok(longComment.width > shortComment.width, "longer comment should get a wider text box");
+  assert.ok(multilineComment.height > shortComment.height, "multiline comment should get a taller text box");
+  assert.ok(laidOut.page.width >= longComment.x + longComment.width / 2);
+});
+
 test("Visio renderer draws comment text without an outer border", () => {
   const script = fs.readFileSync(path.join(__dirname, "..", "..", "scripts", "New-VisioFlowchart.ps1"), "utf8");
 
   assert.match(script, /commentPositions/);
   assert.match(script, /LinePattern" -Formula "0"/);
+});
+
+test("Visio renderer uses dynamic comment text box dimensions from layout JSON", () => {
+  const script = fs.readFileSync(path.join(__dirname, "..", "..", "scripts", "New-VisioFlowchart.ps1"), "utf8");
+
+  assert.match(script, /\$commentWidth = if \(\$commentPosition\.width\)/);
+  assert.match(script, /\$commentHeight = if \(\$commentPosition\.height\)/);
+  assert.match(script, /\[double\]\$commentPosition\.x - \$commentWidth \/ 2/);
+  assert.match(script, /\[double\]\$commentPosition\.y - \$commentHeight \/ 2/);
+  assert.doesNotMatch(script, /\[double\]\$commentPosition\.x - 1\.45/);
+  assert.doesNotMatch(script, /\[double\]\$commentPosition\.y - 0\.32/);
+});
+
+test("Visio renderer draws positioned edge labels separately from connectors", () => {
+  const script = fs.readFileSync(path.join(__dirname, "..", "..", "scripts", "New-VisioFlowchart.ps1"), "utf8");
+
+  assert.match(script, /New-EdgeLabelText/);
+  assert.match(script, /\$edge\.labelPosition/);
+  assert.match(script, /\$connectorLabel = if \(\(Test-ConnectorLabelVisible -Label \$edge\.label\) -and -not \$edge\.labelPosition\)/);
+  assert.match(script, /-Label \$connectorLabel/);
+});
+
+test("Visio renderer suppresses redundant break and continue connector labels", () => {
+  const script = fs.readFileSync(path.join(__dirname, "..", "..", "scripts", "New-VisioFlowchart.ps1"), "utf8");
+
+  assert.match(script, /Test-ConnectorLabelVisible/);
+  assert.match(script, /"Break",\s*"Continue"/);
+  assert.match(script, /\$connectorLabel = if \(\(Test-ConnectorLabelVisible -Label \$edge\.label\) -and -not \$edge\.labelPosition\)/);
 });

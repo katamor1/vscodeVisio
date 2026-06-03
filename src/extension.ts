@@ -11,7 +11,17 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("vscodeVisio.generateFlowchartFromSelection", async () => {
       try {
-        await generateFlowchart(context);
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Visio: フローチャートを生成しています",
+            cancellable: false
+          },
+          async (progress) => {
+            progress.report({ message: "コマンドを受け付けました" });
+            await generateFlowchart(context, progress);
+          }
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         vscode.window.showErrorMessage(`Visio flowchart generation failed: ${message}`);
@@ -24,7 +34,10 @@ export function deactivate(): void {
   // VS Code calls this on extension shutdown.
 }
 
-async function generateFlowchart(context: vscode.ExtensionContext): Promise<void> {
+async function generateFlowchart(
+  context: vscode.ExtensionContext,
+  progress?: vscode.Progress<{ message?: string; increment?: number }>
+): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showErrorMessage("Open a C file before generating a Visio flowchart.");
@@ -33,6 +46,7 @@ async function generateFlowchart(context: vscode.ExtensionContext): Promise<void
 
   const document = editor.document;
   const config = vscode.workspace.getConfiguration("vscodeVisio");
+  progress?.report({ message: "Cコードを解析しています..." });
   const selectedText = document.getText(editor.selection);
   const parsed =
     selectedText.trim().length > 0
@@ -49,6 +63,7 @@ async function generateFlowchart(context: vscode.ExtensionContext): Promise<void
     config.get<string>("visioStencilPath") ??
     "C:\\Program Files\\Microsoft Office\\Root\\Office16\\Visio Content\\1041\\BASFLO_M.VSSX";
   const scriptPath = path.join(context.extensionPath, "scripts", "New-VisioFlowchart.ps1");
+  progress?.report({ message: "Visio COMを起動しています..." });
   await withTemporaryFlowJson(flow, async (flowJsonPath) => {
     await runPowerShell(scriptPath, ["-InputJson", flowJsonPath, "-OutputVsdx", outputVsdxPath, "-StencilPath", stencilPath]);
   });
